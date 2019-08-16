@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
@@ -137,34 +138,70 @@ int getWindowSize(int* rows, int* cols) {
     }
 }
 
+// ******** APPEND BUFFER ********
+
+struct abuff {
+    char *b;
+    int len;
+};
+
+#define ABUFF_INIT {NULL, 0};
+
+void abuffAppend(struct abuff* ab, const char* s, int len) {
+    char* new = realloc(ab->b, ab->len + len);
+
+    if (new == NULL) {
+        return;
+    }
+
+    memcpy(&new[ab->len], s, len);
+    ab->b = new;
+    ab->len += len;
+}
+
+void abuffFree(struct abuff* ab) {
+    free(ab->b);
+}
+
 // ******** OUTPUT ********
 
-void editorDrawRows() {
+void editorDrawRows(struct abuff* ab) {
     for (int y = 0; y < E.screen_rows; y++) {
-        write(STDOUT_FILENO, "~", 1);
+        abuffAppend(ab, "~", 1);
+
+        // Write a 3-byte escape sequence to the terminal to clear the screen.
+        // The first byte is \x1b is the escape character (decimal 27),
+        // followed by [K, the next two bytes.
+        // The K escape sequence command takes a parameter, 2, which clears the
+        // entire line. [0K is the default argument and clears the line to
+        // the right of the cursor. [1K clears the line to the left of the cursor.
+        abuffAppend(ab, "\x1b[K", 3); // K: Erase in line
 
         if (y < E.screen_rows - 1) {
-            write(STDOUT_FILENO, "\r\n", 2);
+            abuffAppend(ab, "\r\n", 2);
         }
     }
 }
 
 void editorRefreshScreen() {
-    // Write a 4-byte escape sequence to the terminal to clear the screen.
-    // The first byte is \x1b is the escape character (decimal 27),
-    // followed by [2J, the next three bytes.
-    // The J escape sequence command takes a parameter, 2, which clears the
-    // entire screen. [0J is the default argument and clears the screen from
-    // the cursor to the end. [1J clears the screen up to the cursor.
-    write(STDOUT_FILENO, "\x1b[2J", 4); // J: Erase In Display
+    struct abuff ab = ABUFF_INIT;
+
+    // l and h commands (Reset Mode, Set Mode) are used to enable/disable
+    // various terminal features.
+    abuffAppend(&ab, "\x1b[?25l", 6); // Hide cursor
 
     // H takes 2 parameters (row and col numbers). Default arguments are 1
     // and 1, which places the cursor at the top of the screen.
-    write(STDOUT_FILENO, "\x1b[H", 3);  // H: Cursor Position
+    abuffAppend(&ab, "\x1b[H", 3);  // H: Cursor Position
 
-    editorDrawRows();
+    editorDrawRows(&ab);
 
-    write(STDOUT_FILENO, "\x1b[H", 3);
+    // Return cursor to the top-left corner and show cursor
+    abuffAppend(&ab, "\x1b[H", 3);
+    abuffAppend(&ab, "\x1b[?25h", 6);
+
+    write(STDOUT_FILENO, ab.b, ab.len);
+    abuffFree(&ab);
 }
 
 // ******** INPUT ********
