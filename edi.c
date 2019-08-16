@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 // ******** DEFINES ********
+#define EDI_VERSION "0.0.1"
 
 #define CTRL_KEY(k) ((k) & 0x1F)
 
@@ -167,7 +168,27 @@ void abuffFree(struct abuff* ab) {
 
 void editorDrawRows(struct abuff* ab) {
     for (int y = 0; y < E.screen_rows; y++) {
-        abuffAppend(ab, "~", 1);
+        // Print welcome message
+        if (y == E.screen_rows/3) {
+            char welcome[80];
+            const char* message = "EDItor -- version %s";
+            int welcome_len = snprintf(welcome, sizeof(welcome), message, EDI_VERSION);
+            // Truncate message if the terminal view is too small
+            if (welcome_len > E.screen_cols) {
+                welcome_len = E.screen_cols;
+            }
+            int padding = (E.screen_cols - welcome_len) / 2;
+            if (padding) {
+                abuffAppend(ab, "~", 1);
+                padding--;
+            }
+            while (padding--) {
+                abuffAppend(ab, " ", 1);
+            }
+            abuffAppend(ab, welcome, welcome_len);
+        } else {
+            abuffAppend(ab, "~", 1);
+        }
 
         // Write a 3-byte escape sequence to the terminal to clear the screen.
         // The first byte is \x1b is the escape character (decimal 27),
