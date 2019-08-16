@@ -14,9 +14,22 @@
 
 #define CTRL_KEY(k) ((k) & 0x1F)
 
+enum editorKey {
+    ARROW_UP = 1000,
+    ARROW_DOWN,
+    ARROW_LEFT,
+    ARROW_RIGHT,
+    DEL_KEY,
+    HOME_KEY,
+    END_KEY,
+    PAGE_UP,
+    PAGE_DOWN
+};
+
 // ******** DATA ********
 
 struct editorConfig {
+    int cx, cy;
     int screen_rows;
     int screen_cols;
     struct termios orig_termios;
@@ -67,7 +80,11 @@ void enableRawMode() {
     }
 }
 
-char editorReadKey() {
+int editorReadKey() {
+    // Note: HOME and END keys have multiple escape sequences
+    // and need to be handled according.
+    // HOME: <esc>[1~, <esc>[7~, <esc>[H, <esc>OH
+    //  END: <esc>[4~, <esc>[8~, <esc>[F, <esc>OF
     int nread;
     char c;
     while ((nread = read(STDIN_FILENO, &c, 1)) != 1) {
@@ -76,7 +93,74 @@ char editorReadKey() {
         }
     }
 
-    return c;
+    if (c == '\x1b') {
+        char seq[3];
+
+        if (read(STDIN_FILENO, &seq[0], 1) != 1) {
+            return '\x1b';
+        }
+
+        if (read(STDIN_FILENO, &seq[1], 1) != 1) {
+            return '\x1b';
+        }
+
+        if (seq[0] == '[') {
+            // Capture escape sequences of the form [<Number>~
+            // For example: [5~ ==> page up
+            if (seq[1] >= '0' && seq[1] <= '9') {
+                if (read(STDIN_FILENO, &seq[2], 1) != 1) {
+                    return '\x1b';
+                }
+
+                if (seq[2] == '~') {
+                    switch(seq[1]) {
+                        case '1':
+                            return HOME_KEY;
+                        case '3':
+                            return DEL_KEY;
+                        case '4':
+                            return END_KEY;
+                        case '5':
+                            return PAGE_UP;
+                        case '6':
+                            return PAGE_DOWN;
+                        case '7':
+                            return HOME_KEY;
+                        case '8':
+                            return END_KEY;
+                    }
+                }
+            } else {
+                // Capture escape sequences of the form [<Letter>
+                // For example: [A ==> up arrow
+                switch (seq[1]) {
+                    case 'A':
+                        return ARROW_UP;
+                    case 'B':
+                        return ARROW_DOWN;
+                    case 'C':
+                        return ARROW_RIGHT;
+                    case 'D':
+                        return ARROW_LEFT;
+                    case 'H':
+                        return HOME_KEY;
+                    case 'F':
+                        return END_KEY;
+                }
+            }
+        } else if (seq[0] == 'O') {
+            switch (seq[1]) {
+                case 'H':
+                    return HOME_KEY;
+                case 'F':
+                    return END_KEY;
+            }
+        }
+
+        return '\x1b';
+    } else {
+        return c;
+    }
 }
 
 int getCursorPosition(int* rows, int* cols) {
@@ -217,9 +301,11 @@ void editorRefreshScreen() {
 
     editorDrawRows(&ab);
 
-    // Return cursor to the top-left corner and show cursor
-    abuffAppend(&ab, "\x1b[H", 3);
-    abuffAppend(&ab, "\x1b[?25h", 6);
+    char buff[32];
+    snprintf(buff, sizeof(buff), "\x1b[%d;%dH", E.cy + 1, E.cx + 1);
+    abuffAppend(&ab, buff, strlen(buff));
+
+    abuffAppend(&ab, "\x1b[?25h", 6); // Show cursor
 
     write(STDOUT_FILENO, ab.b, ab.len);
     abuffFree(&ab);
@@ -227,14 +313,63 @@ void editorRefreshScreen() {
 
 // ******** INPUT ********
 
+void editorMoveCursor(int key) {
+    switch (key) {
+        case ARROW_LEFT:
+            if (E.cx != 0) {
+                E.cx--;
+            }
+            break;
+        case ARROW_RIGHT:
+            if (E.cx != E.screen_cols - 1) {
+                E.cx++;
+            }
+            break;
+        case ARROW_UP:
+            if (E.cy != 0) {
+                E.cy--;
+            }
+            break;
+        case ARROW_DOWN:
+            if (E.cy != E.screen_rows - 1) {
+                E.cy++;
+            }
+            break;
+    }
+}
+
 void editorProcessKeypress() {
-    char c = editorReadKey();
+    int c = editorReadKey();
 
     switch (c) {
         case CTRL_KEY('q'):
             write(STDOUT_FILENO, "\x1b[2J", 4);
             write(STDOUT_FILENO, "\x1b[H", 3);
             exit(0);
+
+        case HOME_KEY:
+            E.cx = 0;
+            break;
+
+        case END_KEY:
+            E.cx = E.screen_cols - 1;
+            break;
+
+        case PAGE_UP:
+        case PAGE_DOWN:
+            { // Creating a code block, {...}, to allow declaration of rows variable
+                int rows = E.screen_rows;
+                while (rows--) {
+                    editorMoveCursor(c == PAGE_UP ? ARROW_UP : ARROW_DOWN);
+                }
+            }
+            break;
+
+        case ARROW_UP:
+        case ARROW_DOWN:
+        case ARROW_LEFT:
+        case ARROW_RIGHT:
+            editorMoveCursor(c);
             break;
     }
 }
@@ -242,6 +377,8 @@ void editorProcessKeypress() {
 // ******** INIT ********
 
 void initEditor() {
+    E.cx = 0;
+    E.cy = 0;
     if (getWindowSize(&E.screen_rows, &E.screen_cols) == -1) {
         die("getWindowSize");
     }
