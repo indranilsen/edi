@@ -43,6 +43,8 @@ typedef struct erow {
 
 struct editorConfig {
     int cx, cy;
+    int row_offset;
+    int col_offset;
     int screen_rows;
     int screen_cols;
     int num_rows;
@@ -302,9 +304,28 @@ void abuffFree(struct abuff* ab) {
 
 // ******** OUTPUT ********
 
+void editorScroll() {
+    if (E.cy < E.row_offset) {
+        E.row_offset = E.cy;
+    }
+
+    if (E.cy >= E.row_offset + E.screen_rows) {
+        E.row_offset = E.cy - E.screen_rows + 1;
+    }
+
+    if (E.cx < E.col_offset) {
+        E.col_offset = E.cx;
+    }
+
+    if (E.cx >= E.col_offset + E.screen_cols) {
+        E.col_offset = E.cx - E.screen_cols + 1;
+    }
+}
+
 void editorDrawRows(struct abuff* ab) {
     for (int y = 0; y < E.screen_rows; y++) {
-        if (y >= E.num_rows) {
+        int file_row = y + E.row_offset;
+        if (file_row >= E.num_rows) {
             // Print welcome message
             if (E.num_rows == 0 && y == E.screen_rows/3) {
                 char welcome[80];
@@ -327,11 +348,14 @@ void editorDrawRows(struct abuff* ab) {
                 abuffAppend(ab, "~", 1);
             }
         } else {
-            int len = E.row[y].size;
+            int len = E.row[file_row].size - E.col_offset;
+            if (len < 0) {
+                len = 0;
+            }
             if (len > E.screen_cols) {
                 len = E.screen_cols;
             }
-            abuffAppend(ab, E.row[y].chars, len);
+            abuffAppend(ab, &E.row[file_row].chars[E.col_offset], len);
         }
 
         // Write a 3-byte escape sequence to the terminal to clear the screen.
@@ -349,6 +373,8 @@ void editorDrawRows(struct abuff* ab) {
 }
 
 void editorRefreshScreen() {
+    editorScroll();
+
     struct abuff ab = ABUFF_INIT;
 
     // l and h commands (Reset Mode, Set Mode) are used to enable/disable
@@ -361,8 +387,11 @@ void editorRefreshScreen() {
 
     editorDrawRows(&ab);
 
+    // Create a H command escape sequence to place the cursor at
+    // the desired location stored in the editorConfig, using the
+    // snprintf function to append to \xb[%d;%d ==> \xb[10;16 (for example)
     char buff[32];
-    snprintf(buff, sizeof(buff), "\x1b[%d;%dH", E.cy + 1, E.cx + 1);
+    snprintf(buff, sizeof(buff), "\x1b[%d;%dH", (E.cy - E.row_offset) + 1, (E.cx - E.col_offset) + 1);
     abuffAppend(&ab, buff, strlen(buff));
 
     abuffAppend(&ab, "\x1b[?25h", 6); // Show cursor
@@ -381,9 +410,7 @@ void editorMoveCursor(int key) {
             }
             break;
         case ARROW_RIGHT:
-            if (E.cx != E.screen_cols - 1) {
-                E.cx++;
-            }
+            E.cx++;
             break;
         case ARROW_UP:
             if (E.cy != 0) {
@@ -391,7 +418,7 @@ void editorMoveCursor(int key) {
             }
             break;
         case ARROW_DOWN:
-            if (E.cy != E.screen_rows - 1) {
+            if (E.cy < E.num_rows) {
                 E.cy++;
             }
             break;
@@ -439,6 +466,8 @@ void editorProcessKeypress() {
 void initEditor() {
     E.cx = 0;
     E.cy = 0;
+    E.row_offset = 0;
+    E.col_offset = 0;
     E.num_rows = 0;
     E.row = NULL;
 
