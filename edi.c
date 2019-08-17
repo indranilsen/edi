@@ -1,3 +1,9 @@
+// ******** FEATURE TEST MACROS ********
+
+#define _DEFAULT_SOURCE
+#define _BSD_SOURCE
+#define _GNU_SOURCE
+
 // ******** INCLUDES ********
 
 #include <ctype.h>
@@ -6,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/types.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -28,10 +35,18 @@ enum editorKey {
 
 // ******** DATA ********
 
+typedef struct erow {
+    int size;
+    char* chars;
+
+} erow;
+
 struct editorConfig {
     int cx, cy;
     int screen_rows;
     int screen_cols;
+    int num_rows;
+    erow* row;
     struct termios orig_termios;
 };
 
@@ -223,10 +238,47 @@ int getWindowSize(int* rows, int* cols) {
     }
 }
 
+// ******** ROW OPERATIONS ********
+
+void editorAppendRow(char* s, size_t len) {
+    E.row = realloc(E.row, sizeof(erow) * (E.num_rows + 1));
+
+    int i = E.num_rows;
+    E.row[i].size = len;
+    E.row[i].chars = malloc(len + 1);
+    memcpy(E.row[i].chars, s, len);
+    E.row[i].chars[len] = '\0';
+    E.num_rows++;
+}
+
+// ******** FILE I/O ********
+
+void editorOpen(char* filename) {
+    FILE* fp = fopen(filename, "r");
+    if (!fp) {
+        die("fopen");
+    }
+
+    char* line = NULL;
+    size_t line_cap = 0;
+    ssize_t line_len;
+
+    // getline return -1 at EOF
+    while ((line_len = getline(&line, &line_cap, fp)) != -1) {
+        while (line_len > 0 && (line[line_len - 1] == '\n' || line[line_len - 1] == '\r')) {
+            line_len--;
+        }
+        editorAppendRow(line, line_len);
+    }
+
+    free(line);
+    fclose(fp);
+}
+
 // ******** APPEND BUFFER ********
 
 struct abuff {
-    char *b;
+    char* b;
     int len;
 };
 
@@ -252,26 +304,34 @@ void abuffFree(struct abuff* ab) {
 
 void editorDrawRows(struct abuff* ab) {
     for (int y = 0; y < E.screen_rows; y++) {
-        // Print welcome message
-        if (y == E.screen_rows/3) {
-            char welcome[80];
-            const char* message = "EDItor -- version %s";
-            int welcome_len = snprintf(welcome, sizeof(welcome), message, EDI_VERSION);
-            // Truncate message if the terminal view is too small
-            if (welcome_len > E.screen_cols) {
-                welcome_len = E.screen_cols;
-            }
-            int padding = (E.screen_cols - welcome_len) / 2;
-            if (padding) {
+        if (y >= E.num_rows) {
+            // Print welcome message
+            if (E.num_rows == 0 && y == E.screen_rows/3) {
+                char welcome[80];
+                const char* message = "EDItor -- version %s";
+                int welcome_len = snprintf(welcome, sizeof(welcome), message, EDI_VERSION);
+                // Truncate message if the terminal view is too small
+                if (welcome_len > E.screen_cols) {
+                    welcome_len = E.screen_cols;
+                }
+                int padding = (E.screen_cols - welcome_len) / 2;
+                if (padding) {
+                    abuffAppend(ab, "~", 1);
+                    padding--;
+                }
+                while (padding--) {
+                    abuffAppend(ab, " ", 1);
+                }
+                abuffAppend(ab, welcome, welcome_len);
+            } else {
                 abuffAppend(ab, "~", 1);
-                padding--;
             }
-            while (padding--) {
-                abuffAppend(ab, " ", 1);
-            }
-            abuffAppend(ab, welcome, welcome_len);
         } else {
-            abuffAppend(ab, "~", 1);
+            int len = E.row[y].size;
+            if (len > E.screen_cols) {
+                len = E.screen_cols;
+            }
+            abuffAppend(ab, E.row[y].chars, len);
         }
 
         // Write a 3-byte escape sequence to the terminal to clear the screen.
@@ -379,14 +439,20 @@ void editorProcessKeypress() {
 void initEditor() {
     E.cx = 0;
     E.cy = 0;
+    E.num_rows = 0;
+    E.row = NULL;
+
     if (getWindowSize(&E.screen_rows, &E.screen_cols) == -1) {
         die("getWindowSize");
     }
 }
 
-int main() {
+int main(int argc, char* argv[]) {
     enableRawMode();
     initEditor();
+    if (argc >= 2) {
+        editorOpen(argv[1]);
+    }
 
     while (1) {
         editorRefreshScreen();
