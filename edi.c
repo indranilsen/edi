@@ -52,6 +52,7 @@ struct editorConfig {
     int screen_cols;
     int num_rows;
     erow* row;
+    char* filename;
     struct termios orig_termios;
 };
 
@@ -305,6 +306,9 @@ void editorAppendRow(char* s, size_t len) {
 // ******** FILE I/O ********
 
 void editorOpen(char* filename) {
+    free(E.filename);
+    E.filename = strdup(filename);
+
     FILE* fp = fopen(filename, "r");
     if (!fp) {
         die("fopen");
@@ -420,10 +424,30 @@ void editorDrawRows(struct abuff* ab) {
         // the right of the cursor. [1K clears the line to the left of the cursor.
         abuffAppend(ab, "\x1b[K", 3); // K: Erase in line
 
-        if (y < E.screen_rows - 1) {
-            abuffAppend(ab, "\r\n", 2);
+        abuffAppend(ab, "\r\n", 2);
+    }
+}
+
+void editorDrawStatusBar(struct abuff* ab) {
+    // m command: Select Graphic Rendition
+    abuffAppend(ab, "\x1b[7m", 4); // Switch to inverted terminal colors
+    char status[80], rstatus[80];
+    int len = snprintf(status, sizeof(status), "%.20s - %d lines", E.filename ? E.filename : "[No Name]", E.num_rows);
+    int rlen = snprintf(rstatus, sizeof(rstatus), "%d/%d", E.cy + 1, E.num_rows);
+    if (len > E.screen_cols) {
+        len = E.screen_cols;
+    }
+    abuffAppend(ab, status, len);
+    while (len < E.screen_cols) {
+        if (E.screen_cols - len == rlen) {
+            abuffAppend(ab, rstatus, rlen);
+            break;
+        } else {
+            abuffAppend(ab, " ", 1);
+            len++;
         }
     }
+    abuffAppend(ab, "\x1b[m", 3); // Switch to normal terminal colors
 }
 
 void editorRefreshScreen() {
@@ -440,6 +464,7 @@ void editorRefreshScreen() {
     abuffAppend(&ab, "\x1b[H", 3);  // H: Cursor Position
 
     editorDrawRows(&ab);
+    editorDrawStatusBar(&ab);
 
     // Create a H command escape sequence to place the cursor at
     // the desired location stored in the editorConfig, using the
@@ -552,10 +577,14 @@ void initEditor() {
     E.col_offset = 0;
     E.num_rows = 0;
     E.row = NULL;
+    E.filename = NULL;
 
     if (getWindowSize(&E.screen_rows, &E.screen_cols) == -1) {
         die("getWindowSize");
     }
+
+    // Use the last row for the status bar
+    E.screen_rows -= 1;
 }
 
 int main(int argc, char* argv[]) {
