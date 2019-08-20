@@ -69,6 +69,8 @@ struct editorConfig E;
 // ******** PROTOTYPES ********
 
 void editorSetStatusMessage(const char* fmt, ...);
+void editorRefreshScreen();
+char* editorPrompt(char* prompt);
 
 // ******** TERMINAL ********
 
@@ -483,7 +485,11 @@ void editorOpen(char* filename) {
 
 void editorSave() {
     if (E.filename == NULL) {
-        return;
+        E.filename = editorPrompt("Save as: %s (ESC to cancel)");
+        if (E.filename == NULL) {
+            editorSetStatusMessage("Save aborted");
+            return;
+        }
     }
 
     int len;
@@ -689,6 +695,44 @@ void editorSetStatusMessage(const char* fmt, ...) {
 }
 
 // ******** INPUT ********
+
+char* editorPrompt(char* prompt) {
+    size_t buff_size = 128;
+    char* buff = malloc(buff_size);
+
+    size_t  buff_len = 0;
+    buff[0] = '\0';
+
+    while (1) {
+        // prompt is expected a format string containing %s, which is where the user’s input will be displayed
+        editorSetStatusMessage(prompt, buff);
+        editorRefreshScreen();
+
+        int c = editorReadKey();
+        if (c == DEL_KEY || c == CTRL_KEY('h') || c == BACKSPACE) {
+            if (buff_len != 0) {
+                buff[--buff_len] = '\0';
+            }
+        } else if (c == '\x1b') {
+            editorSetStatusMessage("");
+            free(buff);
+            return NULL;
+        } else if (c == '\r') {
+            if (buff_len != 0) {
+                editorSetStatusMessage("");
+                return buff;
+            }
+        } else if (!iscntrl(c) &&  c < 128) { // Make sure input isn't a special key in editorKey
+                                              // by making sure it is less than 128
+            if (buff_len == buff_size - 1) {
+                buff_size *= 2;
+                buff = realloc(buff, buff_size);
+            }
+            buff[buff_len++] = c;
+            buff[buff_len] = '\0';
+        }
+    }
+}
 
 void editorMoveCursor(int key) {
     erow* row = (E.cy >= E.num_rows) ? NULL : &E.row[E.cy];
