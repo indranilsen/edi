@@ -299,18 +299,22 @@ void editorUpdateRow(erow* row) {
     row->rsize = idx;
 }
 
-void editorAppendRow(char* s, size_t len) {
+void editorInsertRow(int at, char* s, size_t len) {
+    if (at < 0 || at > E.num_rows) {
+        return;
+    }
+
     E.row = realloc(E.row, sizeof(erow) * (E.num_rows + 1));
+    memmove(&E.row[at + 1], &E.row[at], sizeof(erow) * (E.num_rows - at));
 
-    int i = E.num_rows;
-    E.row[i].size = len;
-    E.row[i].chars = malloc(len + 1);
-    memcpy(E.row[i].chars, s, len);
-    E.row[i].chars[len] = '\0';
+    E.row[at].size = len;
+    E.row[at].chars = malloc(len + 1);
+    memcpy(E.row[at].chars, s, len);
+    E.row[at].chars[len] = '\0';
 
-    E.row[i].rsize = 0;
-    E.row[i].render = NULL;
-    editorUpdateRow(&E.row[i]);
+    E.row[at].rsize = 0;
+    E.row[at].render = NULL;
+    editorUpdateRow(&E.row[at]);
 
     E.num_rows++;
     E.dirty++;
@@ -376,10 +380,29 @@ void editorInsertChar(int c) {
     // If the cursor is at the tilde line at the EOF, then append a new row to the file
     // before inserting a character.
     if (E.cy == E.num_rows) {
-        editorAppendRow("", 0);
+        editorInsertRow(E.num_rows, "", 0);
     }
     editorRowInsertChar(&E.row[E.cy], E.cx, c);
     E.cx++;
+}
+
+void editorInsertNewline() {
+    if (E.cx == 0) {
+        editorInsertRow(E.cy, "", 0);
+    } else {
+        erow* row = &E.row[E.cy];
+        editorInsertRow(E.cy + 1, &row->chars[E.cx], row->size - E.cx);
+
+        // Reassign the row pointer in case the realloc() in editorInsertRow() invalidates the pointer
+        row = &E.row[E.cy];
+
+        // Truncate the current row and call editorUpdateRow() on it
+        row->size = E.cx;
+        row->chars[row->size] = '\0';
+        editorUpdateRow(row);
+    }
+    E.cy++;
+    E.cx = 0;
 }
 
 void editorDelChar() {
@@ -448,7 +471,7 @@ void editorOpen(char* filename) {
         while (line_len > 0 && (line[line_len - 1] == '\n' || line[line_len - 1] == '\r')) {
             line_len--;
         }
-        editorAppendRow(line, line_len);
+        editorInsertRow(E.num_rows, line, line_len);
     }
 
     free(line);
@@ -713,7 +736,7 @@ void editorProcessKeypress() {
 
     switch (c) {
         case '\r':
-            /* TODO */
+            editorInsertNewline();
             break;
 
         case CTRL_KEY('q'):
