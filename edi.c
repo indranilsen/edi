@@ -8,6 +8,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -21,10 +22,12 @@
 // ******** DEFINES ********
 #define EDI_VERSION "0.0.1"
 #define EDI_TAB_STOP 8
+#define EDI_QUIT_TIMES 3
 
 #define CTRL_KEY(k) ((k) & 0x1F)
 
 enum editorKey {
+    BACKSPACE = 127,
     ARROW_UP = 1000,
     ARROW_DOWN,
     ARROW_LEFT,
@@ -54,6 +57,7 @@ struct editorConfig {
     int screen_cols;
     int num_rows;
     erow* row;
+    int dirty;
     char* filename;
     char statusmsg[80];
     time_t statusmsg_time;
@@ -61,6 +65,10 @@ struct editorConfig {
 };
 
 struct editorConfig E;
+
+// ******** PROTOTYPES ********
+
+void editorSetStatusMessage(const char* fmt, ...);
 
 // ******** TERMINAL ********
 
@@ -305,6 +313,7 @@ void editorAppendRow(char* s, size_t len) {
     editorUpdateRow(&E.row[i]);
 
     E.num_rows++;
+    E.dirty++;
 }
 
 void editorRowInsertChar(erow* row, int at, int c) {
@@ -324,6 +333,7 @@ void editorRowInsertChar(erow* row, int at, int c) {
     row->size++;
     row->chars[at] = c;
     editorUpdateRow(row);
+    E.dirty++;
 }
 
 // ******** EDITOR OPERATIONS ********
@@ -339,6 +349,28 @@ void editorInsertChar(int c) {
 }
 
 // ******** FILE I/O ********
+
+char* editorRowsToString(int* buff_len) {
+    int total_len = 0;
+    int j;
+    for (j = 0; j < E.num_rows; j++) {
+        // Plus 1 for the newline character
+        total_len += E.row[j].size + 1;
+    }
+
+    *buff_len = total_len;
+
+    char* buff = malloc(total_len);
+    char* ptr = buff;
+    for (j = 0; j < E.num_rows; j++) {
+        memcpy(ptr, E.row[j].chars, E.row[j].size);
+        ptr += E.row[j].size;
+        *ptr = '\n';
+        ptr++;
+    }
+
+    return buff;
+}
 
 void editorOpen(char* filename) {
     free(E.filename);
@@ -363,6 +395,43 @@ void editorOpen(char* filename) {
 
     free(line);
     fclose(fp);
+
+    // editorAppendRow() above increments the dirty bit so clear it
+    E.dirty = 0;
+}
+
+void editorSave() {
+    if (E.filename == NULL) {
+        return;
+    }
+
+    int len;
+    char* buff = editorRowsToString(&len);
+
+    // O_CREAT flag creates the file if it does not exist
+    // O_CREAT requires an extra argument 0644 which is the
+    // standard permission for text files, giving the owner
+    // read/write permissions; all other users get read permissions.
+    // O_RDWR flag opens the file to read and write
+    int fd = open(E.filename, O_RDWR | O_CREAT, 0644);
+
+    if (fd != -1) {
+        // Set the file's size to the specified size, cutting off data
+        // that is larger than 'len'
+        if (ftruncate(fd, len) != -1) {
+            if (write(fd, buff, len) == len) {
+                close(fd);
+                free(buff);
+                E.dirty = 0;
+                editorSetStatusMessage("%d bytes written to disk", len);
+                return;
+            }
+        }
+        close(fd);
+    }
+
+    free(buff);
+    editorSetStatusMessage("Could not save. I/O errors: %s", strerror(errno));
 }
 
 // ******** APPEND BUFFER ********
@@ -467,7 +536,10 @@ void editorDrawStatusBar(struct abuff* ab) {
     // m command: Select Graphic Rendition
     abuffAppend(ab, "\x1b[7m", 4); // Switch to inverted terminal colors
     char status[80], rstatus[80];
-    int len = snprintf(status, sizeof(status), "%.20s - %d lines", E.filename ? E.filename : "[No Name]", E.num_rows);
+    int len = snprintf(status, sizeof(status), "%.20s - %d lines %s",
+            E.filename ? E.filename : "[No Name]",
+            E.num_rows,
+            E.dirty ? "(modified)" : "");
     int rlen = snprintf(rstatus, sizeof(rstatus), "%d/%d", E.cy + 1, E.num_rows);
     if (len > E.screen_cols) {
         len = E.screen_cols;
@@ -577,13 +649,29 @@ void editorMoveCursor(int key) {
 }
 
 void editorProcessKeypress() {
+    static int quit_times = EDI_QUIT_TIMES;
+
     int c = editorReadKey();
 
     switch (c) {
+        case '\r':
+            /* TODO */
+            break;
+
         case CTRL_KEY('q'):
+            if (E.dirty && quit_times > 0) {
+                editorSetStatusMessage("WARNING! File has unsaved changes. "
+                                       "Press Ctrl-Q %d more times to quit.", quit_times);
+                quit_times--;
+                return;
+            }
             write(STDOUT_FILENO, "\x1b[2J", 4);
             write(STDOUT_FILENO, "\x1b[H", 3);
             exit(0);
+
+        case CTRL_KEY('s'):
+            editorSave();
+            break;
 
         case HOME_KEY:
             E.cx = 0;
@@ -593,6 +681,12 @@ void editorProcessKeypress() {
             if (E.cy < E.num_rows) {
                 E.cx = E.row[E.cy].size;
             }
+            break;
+
+        case BACKSPACE:
+        case CTRL_KEY('h'):
+        case DEL_KEY:
+            /* TODO */
             break;
 
         case PAGE_UP:
@@ -621,10 +715,16 @@ void editorProcessKeypress() {
             editorMoveCursor(c);
             break;
 
+        case CTRL_KEY('l'):
+        case '\x1b':
+            break;
+
         default:
             editorInsertChar(c);
             break;
     }
+
+    quit_times = EDI_QUIT_TIMES;
 }
 
 // ******** INIT ********
@@ -637,6 +737,7 @@ void initEditor() {
     E.col_offset = 0;
     E.num_rows = 0;
     E.row = NULL;
+    E.dirty = 0;
     E.filename = NULL;
     E.statusmsg[0] = '\0';
     E.statusmsg_time = 0;
@@ -656,7 +757,7 @@ int main(int argc, char* argv[]) {
         editorOpen(argv[1]);
     }
 
-    editorSetStatusMessage("HELP: Ctrl-Q = quit");
+    editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit");
 
     while (1) {
         editorRefreshScreen();
