@@ -539,15 +539,54 @@ void editorSave() {
 // ******** FIND ********
 
 void editorFindCallback(char* query, int key) {
+    static int last_match = -1; // -1 means there was no last match
+    static int direction = 1;   // 1 for forward; -1 for backward
+
     if (key == '\r' || key == '\x1b') {
+        // When we leave search, reset the variables for the next search
+        last_match = -1;
+        direction = 1;
         return;
+    } else if (key == ARROW_RIGHT || key == ARROW_DOWN) {
+        direction = 1;
+    } else if (key == ARROW_LEFT || key == ARROW_UP) {
+        direction = -1;
+    } else {
+        // Always reset last_match to -1 unless an arrow key is pressed
+        last_match = -1;
+
+        // Always set direction to 1 unless left or up arrow keys were pressed
+        // So, always search forward unless explicitly asked to search backwards
+        direction = 1;
     }
 
+    if (last_match == -1) {
+        direction = 1;
+    }
+
+    // Current is the index of the current row that is being searched
+    int current = last_match;
+
     for (int i = 0; i < E.num_rows; i++) {
-        erow* row = &E.row[i];
+
+        // If there was a last match, it starts on the line after or
+        // before (depending of 'direction1 [-1 | +1]) if search is forwards
+        // or backwards. If there wasn't a last match, it starts at the top
+        // of the file and searches forward to find the first match.
+        // This if/else-if causes current to wrap around the end of the file
+        // and continue from the top or bottom
+        current += direction;
+        if (current == -1) {
+            current = E.num_rows - 1;
+        } else if (current == E.num_rows) {
+            current = 0;
+        }
+
+        erow* row = &E.row[current];
         char* match = strstr(row->render, query);
         if (match) {
-            E.cy = i;
+            last_match = current;
+            E.cy = current;
 
             // Convert the match pointer to an index
             E.cx = editorRowRxToCx(row, match - row->render);
@@ -561,10 +600,20 @@ void editorFindCallback(char* query, int key) {
 }
 
 void editorFind() {
-    char* query = editorPrompt("Search: %s (ESC to cancel)", editorFindCallback);
+    int saved_cx = E.cx;
+    int saved_cy = E.cy;
+    int saved_col_offset = E.col_offset;
+    int saved_row_offset = E.row_offset;
+
+    char* query = editorPrompt("Search: %s (Use ESC/Arrows/Enter)", editorFindCallback);
 
     if (query) {
         free(query);
+    } else {
+        E.cx = saved_cx;
+        E.cy = saved_cy;
+        E.col_offset = saved_col_offset;
+        E.row_offset = saved_row_offset;
     }
 }
 
