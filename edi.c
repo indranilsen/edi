@@ -41,16 +41,20 @@ enum editorKey {
 
 enum editorHighlight {
     HL_NORMAL = 0,
+    HL_COMMENT,
+    HL_STRING,
     HL_NUMBER,
     HL_MATCH
 };
 
 #define HL_HIGHLIGHT_NUMBERS (1<<0)
+#define HL_HIGHLIGHT_STRINGS (1<<1)
 
 // ******** DATA ********
 struct editorSyntax {
     char* file_type;
     char** file_match;
+    char* singleline_comment_start;
     int flags;
 };
 
@@ -87,7 +91,8 @@ char* C_HL_extensions[] = { ".c", ".h", ".cpp", NULL };
 struct editorSyntax HLDB[] = {
         "c",
         C_HL_extensions,
-        HL_HIGHLIGHT_NUMBERS
+        "//",
+        HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS
 };
 
 #define HLDB_ENTRIES (sizeof(HLDB) / sizeof(HLDB[0]))
@@ -297,16 +302,60 @@ void editorUpdateSyntax(erow* row) {
         return;
     }
 
+    char* scs = E.syntax->singleline_comment_start;
+    int scs_len = scs ? strlen(scs) : 0;
+
     int prev_sep = 1;
+    int in_string = 0;
 
     int i = 0;
     while (i < row->rsize) {
         char c = row->render[i];
         unsigned char prev_hl = (i > 0) ? row->hl[i - 1] : HL_NORMAL;
 
+        // Handle language-specific singleline comments
+        if (scs_len && !in_string) {
+            // If the current char(s) is equal to scs, then strncmp returns 0 (==> false in C)
+            if (!strncmp(&row->render[i], scs, scs_len)) {
+                memset(&row->hl[i], HL_COMMENT, row->rsize - i);
+                break;
+            }
+        }
+
+        if (E.syntax->flags & HL_HIGHLIGHT_STRINGS) {
+            if (in_string) {
+                row->hl[i] = HL_STRING;
+
+                // Handling the case when string is enclosed with escaped quotes
+                // Ex: \"Hello Word\"
+                if (c == '\\' && i + 1 < row->rsize) {
+                    row->hl[i + 1] = HL_STRING;
+                    i += 2;
+                    continue;
+                }
+
+                // If current char is end quote, turn off in_string flag
+                if (c == in_string) {
+                    in_string = 0;
+                }
+                i++;
+                // Set prev_sep to 1 so that if highlighting string is
+                // complete, the close quote is considered a separator
+                prev_sep = 1;
+                continue;
+            } else {
+                if (c == '"' || c == '\'') {
+                    in_string = c;
+                    row->hl[i] = HL_STRING;
+                    i++;
+                    continue;
+                }
+            }
+        }
+
         if (E.syntax->flags & HL_HIGHLIGHT_NUMBERS) {
             if ((isdigit(c) && (prev_sep || prev_hl == HL_NUMBER)) ||
-                (c == '.' && prev_hl == HL_NUMBER)){
+                (c == '.' && prev_hl == HL_NUMBER)) {
                 row->hl[i] = HL_NUMBER;
                 i++;
                 prev_sep = 0;
@@ -320,7 +369,23 @@ void editorUpdateSyntax(erow* row) {
 }
 
 int editorSyntaxToColor(int hl) {
+    // m Command Color Table
+    // |        	| Normal 	| Bright 	|
+    // |--------	|--------	|--------	|
+    // | Black  	| 0      	| 8      	|
+    // | Red    	| 1      	| 9      	|
+    // | Green  	| 2      	| 10     	|
+    // | Yellow 	| 3      	| 11     	|
+    // | Blue   	| 4      	| 12     	|
+    // | Purple 	| 5      	| 13     	|
+    // | Cyan   	| 6      	| 14     	|
+    // | White  	| 7      	| 15     	|
+
     switch (hl) {
+        case HL_COMMENT:
+            return 36;
+        case HL_STRING:
+            return 35;
         case HL_NUMBER:
             return 31;
         case HL_MATCH:
