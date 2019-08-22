@@ -39,6 +39,12 @@ enum editorKey {
     PAGE_DOWN
 };
 
+enum editorHighlight {
+    HL_NORMAL = 0,
+    HL_NUMBER,
+    HL_MATCH
+};
+
 // ******** DATA ********
 
 typedef struct erow {
@@ -46,6 +52,7 @@ typedef struct erow {
     int rsize;
     char* chars;
     char* render;
+    unsigned char* hl;
 } erow;
 
 struct editorConfig {
@@ -258,6 +265,46 @@ int getWindowSize(int* rows, int* cols) {
     }
 }
 
+// ******** SYNTAX HIGHLIGHTING ********
+int is_separator(int c) {
+    return isspace(c) || c == '\0' || strchr(",.()+-/*=~%<>[];", c) != NULL;
+}
+
+void editorUpdateSyntax(erow* row) {
+    row->hl = realloc(row->hl, row->rsize);
+    memset(row->hl, HL_NORMAL, row->rsize);
+
+    int prev_sep = 1;
+
+    int i = 0;
+    while (i < row->rsize) {
+        char c = row->render[i];
+        unsigned char prev_hl = (i > 0) ? row->hl[i - 1] : HL_NORMAL;
+
+        if ((isdigit(c) && (prev_sep || prev_hl == HL_NUMBER)) ||
+                (c == '.' && prev_hl == HL_NUMBER)){
+            row->hl[i] = HL_NUMBER;
+            i++;
+            prev_sep = 0;
+            continue;
+        }
+
+        prev_sep = is_separator(c);
+        i++;
+    }
+}
+
+int editorSyntaxToColor(int hl) {
+    switch (hl) {
+        case HL_NUMBER:
+            return 31;
+        case HL_MATCH:
+            return 34;
+        default:
+            return 37;
+    }
+}
+
 // ******** ROW OPERATIONS ********
 
 int editorRowCxToRx(erow* row, int cx) {
@@ -314,6 +361,8 @@ void editorUpdateRow(erow* row) {
 
     row->render[idx] = '\0';
     row->rsize = idx;
+
+    editorUpdateSyntax(row);
 }
 
 void editorInsertRow(int at, char* s, size_t len) {
@@ -331,6 +380,9 @@ void editorInsertRow(int at, char* s, size_t len) {
 
     E.row[at].rsize = 0;
     E.row[at].render = NULL;
+
+    E.row[at].hl = NULL;
+
     editorUpdateRow(&E.row[at]);
 
     E.num_rows++;
@@ -340,6 +392,7 @@ void editorInsertRow(int at, char* s, size_t len) {
 void editorFreeRow(erow* row) {
     free(row->render);
     free(row->chars);
+    free(row->hl);
 }
 
 void editorDelRow(int at) {
@@ -542,6 +595,15 @@ void editorFindCallback(char* query, int key) {
     static int last_match = -1; // -1 means there was no last match
     static int direction = 1;   // 1 for forward; -1 for backward
 
+    static int saved_hl_line;
+    static char* saved_hl = NULL;
+
+    if (saved_hl) {
+        memcpy(E.row[saved_hl_line].hl, saved_hl, E.row[saved_hl_line].rsize);
+        free(saved_hl);
+        saved_hl = NULL;
+    }
+
     if (key == '\r' || key == '\x1b') {
         // When we leave search, reset the variables for the next search
         last_match = -1;
@@ -594,9 +656,22 @@ void editorFindCallback(char* query, int key) {
             // Set row offset so match line is at the top of the screen
             E.row_offset = E.num_rows;
 
+            saved_hl_line = current;
+            saved_hl = malloc(row->rsize);
+            memcpy(saved_hl, row->hl, row->rsize);
+            memset(&row->hl[match - row->render], HL_MATCH, strlen(query));
             break;
         }
     }
+
+    // Note on restoring saved line after syntax highlighting search:
+    // malloc() memory is guaranteed to be free(), because when the user closes the
+    // search prompt by pressing Enter or Escape, editorPrompt() calls the callback,
+    // allowing hl to be restored before editorPrompt() finally returns.
+    // Also note that it’s impossible for saved_hl to get allocated (malloc) before
+    // its old value gets free() since it's always free() at the top of the function.
+    // Finally, it’s impossible for the user to edit the file between saving and
+    // restoring the hl, so saved_hl_line can be safely used as an index into E.row.
 }
 
 void editorFind() {
@@ -700,7 +775,34 @@ void editorDrawRows(struct abuff* ab) {
             if (len > E.screen_cols) {
                 len = E.screen_cols;
             }
-            abuffAppend(ab, &E.row[file_row].render[E.col_offset], len);
+
+
+            // current_color is -1 for default text color, else it's set to editorSyntaxToColor()'s last return val.
+            // When color changes, print the escape sequence for that color and set current_color to the new color.
+            // When going from highlighted text back to HL_NORMAL text, print out the <esc>[39m escape sequence and
+            // set current_color to -1.
+            char* c = &E.row[file_row].render[E.col_offset];
+            unsigned char* hl = &E.row[file_row].hl[E.col_offset];
+            int current_color = -1;
+            for (int j = 0; j < len; j++) {
+                if (hl[j] == HL_NORMAL) {
+                    if (current_color != -1) {
+                        abuffAppend(ab, "\x1b[39m", 5);
+                        current_color = -1;
+                    }
+                    abuffAppend(ab, &c[j], 1);
+                } else {
+                    int color = editorSyntaxToColor(hl[j]);
+                    if (current_color != color) {
+                        current_color = color;
+                        char buff[16];
+                        int clen = snprintf(buff, sizeof(buff), "\x1b[%dm", color);
+                        abuffAppend(ab, buff, clen);
+                    }
+                    abuffAppend(ab, &c[j], 1);
+                }
+            }
+            abuffAppend(ab, "\x1b[39m", 5);
         }
 
         // Write a 3-byte escape sequence to the terminal to clear the screen.
