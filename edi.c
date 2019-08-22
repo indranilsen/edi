@@ -42,6 +42,8 @@ enum editorKey {
 enum editorHighlight {
     HL_NORMAL = 0,
     HL_COMMENT,
+    HL_KEYWORD1,
+    HL_KEYWORD2,
     HL_STRING,
     HL_NUMBER,
     HL_MATCH
@@ -54,6 +56,7 @@ enum editorHighlight {
 struct editorSyntax {
     char* file_type;
     char** file_match;
+    char** keywords;
     char* singleline_comment_start;
     int flags;
 };
@@ -86,11 +89,22 @@ struct editorConfig {
 struct editorConfig E;
 
 // ******** FILE TYPES ********
+
 char* C_HL_extensions[] = { ".c", ".h", ".cpp", NULL };
+char* C_HL_keywords[] = {
+        "break", "case", "class", "const", "continue", "default", "do",
+        "else", "enum", "extern", "for", "goto", "if", "register",
+        "return", "sizeof", "static", "struct", "switch", "typedef",
+        "union", "volatile", "while",
+
+        "auto|", "char|", "double|", "float|", "int|", "long|", "short|",
+        "signed|", "unsigned|", "void|", NULL
+};
 
 struct editorSyntax HLDB[] = {
         "c",
         C_HL_extensions,
+        C_HL_keywords,
         "//",
         HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS
 };
@@ -302,6 +316,8 @@ void editorUpdateSyntax(erow* row) {
         return;
     }
 
+    char** keywords = E.syntax->keywords;
+
     char* scs = E.syntax->singleline_comment_start;
     int scs_len = scs ? strlen(scs) : 0;
 
@@ -363,6 +379,38 @@ void editorUpdateSyntax(erow* row) {
             }
         }
 
+        // Keywords should start with a separator, so
+        // check if previous character was a separator.
+        // Ex: 'void' should match; 'avoidable' should not match
+        if (prev_sep) {
+            int j;
+            for (j = 0; keywords[j]; j++) {
+                int klen = strlen(keywords[j]);
+                int kw2 = keywords[j][klen - 1] == '|';
+                if (kw2) {
+                    klen--;
+                }
+
+                // If the following char sequence matches a keyword and
+                // ends with a separator, then it's a keyword
+                if (!strncmp(&row->render[i], keywords[j], klen) &&
+                        is_separator(row->render[i + klen])) {
+                    enum editorHighlight keyword_type = kw2 ? HL_KEYWORD2 : HL_KEYWORD1;
+                    memset(&row->hl[i], keyword_type, klen);
+                    i += klen;
+                    break;
+                }
+            }
+
+            // If keywords is not NULL, then the previous for-loop was
+            // broken out of which would mean a valid keyword was found.
+            // In this case, continue.
+            if (keywords[j] != NULL) {
+                prev_sep = 0;
+                continue;
+            }
+        }
+
         prev_sep = is_separator(c);
         i++;
     }
@@ -384,6 +432,10 @@ int editorSyntaxToColor(int hl) {
     switch (hl) {
         case HL_COMMENT:
             return 36;
+        case HL_KEYWORD1:
+            return 33;
+        case HL_KEYWORD2:
+            return 32;
         case HL_STRING:
             return 35;
         case HL_NUMBER:
